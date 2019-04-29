@@ -16,29 +16,41 @@
 
 #[macro_use]
 extern crate failure;
+extern crate tempfile;
 
 mod util;
 
 use comms_service::*;
 use pnet::packet::udp::UdpPacket;
 use pnet::packet::Packet;
-use std::net::UdpSocket;
+use std::net::Ipv4Addr;
+use std::str::FromStr;
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
 use util::*;
+use utils::testing::TestService;
 
-// Testing sending a packet to the downlink port
-// and checking if it arrives in the MockComms write queue
+// Tests sending a ping from the ground to an instance of the actual
+// monitor service and reading back the response.
 #[test]
-fn downlink_to_ground() {
-    let sat_ip = "127.0.0.3";
-    let ground_ip = "127.0.0.2";
-    let ground_port = 16001;
-    let downlink_port = 16002;
+fn query_monitor_service() {
+    let sat_ip = "127.0.0.5";
+    let ground_ip = "127.0.0.6";
+    let ground_port = 15001;
+    let downlink_port = 15002;
+    let service_port = 15005;
     let config = comms_config(sat_ip, ground_ip, ground_port, downlink_port);
     let mock_comms = Arc::new(Mutex::new(MockComms::new()));
-    let payload = vec![5, 4, 3, 2];
+    let query = "{\"query\":\"{ping}\"}".as_bytes();
+    let response = "{\"data\":{\"ping\":\"pong\"}}".as_bytes();
+
+    // Start up monitor service
+    let monitor_service = TestService::new("monitor-service", sat_ip, service_port);
+    monitor_service.build();
+    monitor_service.spawn();
+
+    thread::sleep(Duration::from_millis(1000));
 
     // Control block to configure communication service.
     let controls = CommsControlBlock::new(
@@ -53,27 +65,31 @@ fn downlink_to_ground() {
     // Initialize new `CommsTelemetry` object.
     let telem = Arc::new(Mutex::new(CommsTelemetry::default()));
 
+    let ground_packet = build_packet(
+        &query,
+        ground_port,
+        service_port,
+        12,
+        Ipv4Addr::from_str(sat_ip).unwrap(),
+        Ipv4Addr::from_str(ground_ip).unwrap(),
+    )
+    .unwrap();
+
+    // Pretend to be the ground and provide a packet
+    // for the comms service to read from the radio
+    mock_comms.lock().unwrap().push_read(&ground_packet);
+
     // Start communication service.
     CommsService::start(controls, &telem).unwrap();
 
-    let downlink_writer = UdpSocket::bind((sat_ip, 0)).unwrap();
-
     // Let the wheels turn
-    thread::sleep(Duration::from_millis(10));
-
-    // Send packet to comm service's downlink port
-    downlink_writer
-        .send_to(&payload, (sat_ip, downlink_port))
-        .unwrap();
-
-    // Let the wheels turn
-    thread::sleep(Duration::from_millis(10));
+    thread::sleep(Duration::from_millis(500));
 
     // Pretend to be the ground and read the
     // packet which was written to the radio
     let data = mock_comms.lock().unwrap().pop_write().unwrap();
     let packet = UdpPacket::new(&data).unwrap();
 
+    assert_eq!(packet.payload().to_vec(), response);
     assert_eq!(packet.get_destination(), ground_port);
-    assert_eq!(packet.payload().to_vec(), payload);
 }
