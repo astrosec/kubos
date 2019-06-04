@@ -16,6 +16,7 @@
 
 use crate::app_entry::*;
 use crate::error::*;
+use failure::format_err;
 use fs_extra;
 use kubos_app::RunLevel;
 use log::*;
@@ -158,6 +159,16 @@ impl AppRegistry {
         }
 
         if let Err(err) = unix::fs::symlink(app_dir, active_symlink.clone()) {
+            // Make sure the 'active' directory exists
+            // If it doesn't, we'll go ahead and recreate it and try again
+            let active_dir = PathBuf::from(format!("{}/active", self.apps_dir));
+            if !active_dir.exists() {
+                fs::create_dir_all(&active_dir)?;
+
+                if unix::fs::symlink(app_dir, active_symlink.clone()).is_ok() {
+                    return Ok(());
+                }
+            }
             return Err(AppError::RegisterError {
                 err: format!(
                     "Couldn't symlink {} to {}: {:?}",
@@ -347,7 +358,15 @@ impl AppRegistry {
         // If that was the last version, also remove the parent directory.
         // (If this call fails, it's probably because the directory wasn't empty because some
         // version of the app still exists, so ignore the error)
-        let _ = fs::remove_dir(format!("{}/{}", self.apps_dir, app_name));
+        if fs::remove_dir(format!("{}/{}", self.apps_dir, app_name)).is_ok() {
+            // That worked, so we also want to remove the active version symlink
+            if let Err(error) = fs::remove_file(format!("{}/active/{}", self.apps_dir, app_name)) {
+                errors = Some(format!(
+                    "{}. Failed to remove active symlink for {}: {}",
+                    error, app_name, error
+                ));
+            }
+        }
 
         // Remove the app entry from the registry list
         let mut entries = self
@@ -550,6 +569,20 @@ impl AppRegistry {
             };
 
             return Err(AppError::StartError { err: msg });
+        }
+
+        // Change our current directory to the app's directory so that it can access any
+        // auxiliary files with relative file paths
+        if let Err(err) = app_path
+            .parent()
+            .ok_or_else(|| format_err!("Failed to get parent dir"))
+            .and_then(|parent_dir| {
+                ::std::env::set_current_dir(parent_dir).map_err(|err| err.into())
+            })
+        {
+            // If we can't change the current directory, we'll log an error and then just
+            // continue trying to execute the application
+            warn!("Failed to set cwd before executing {}: {:?}", app_name, err);
         }
 
         let mut cmd = Command::new(app_path);

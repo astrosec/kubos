@@ -27,6 +27,18 @@ pub struct QueryRoot;
 
 /// Base GraphQL query model
 graphql_object!(QueryRoot : Context as "Query" |&self| {
+    // Test query to verify service is running without
+    // attempting to execute an actual logic
+    //
+    // {
+    //    ping: "pong"
+    // }
+    field ping() -> FieldResult<String>
+        as "Test service query"
+    {
+        Ok(String::from("pong"))
+    }
+
     field apps(&executor,
                name: Option<String>,
                version: Option<String>,
@@ -109,6 +121,16 @@ graphql_object!(MutationRoot : Context as "Mutation" |&self| {
                 "OnBoot" => RunLevel::OnBoot,
                 _ => RunLevel::OnCommand
             }
+        };
+
+        let args = if let Some(mut params) = args {
+            // Add '--' to our list of args so that the app framework passes them successfully to
+            // the underlying app
+            let mut temp = vec!["--".to_owned()];
+            temp.append(&mut params);
+            Some(temp)
+        } else {
+            None
         };
 
         Ok(match executor.context().subsystem().start_app(&name, &run_level_o, args) {
