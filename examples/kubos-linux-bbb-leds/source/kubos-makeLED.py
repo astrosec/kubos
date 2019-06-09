@@ -38,15 +38,24 @@ def on_command(logger,subcommand):
         sys.exit(1)
 
 def main():
-
+ 
     logger = app_api.logging_setup("kubos-linux-makeLED")
 
-    parser = argparse.ArgumentParser()
+    logger.info("Entering main LED logic BLINKER!!! ")
+    theargs = str(sys.argv[1:])
+    theargs.replace("--","")
+    logger.info("args are " + theargs)
+
+    if "--" in sys.argv: sys.argv.remove("--")
+
+    parser = argparse.ArgumentParser(theargs)
 
     parser.add_argument('--run', '-r')
     parser.add_argument('--subcommand', '-s')
 
     args = parser.parse_args()
+
+    logger.info("args are " + str(args))
 
     if args.run == 'OnBoot':
         on_boot(logger)
