@@ -1,0 +1,8 @@
+mutation
+{
+  startApp(name: "kubos-makeLED", runLevel: "OnCommand" args:"-soff" ) {
+    success,
+    errors,
+    pid
+  }
+}
