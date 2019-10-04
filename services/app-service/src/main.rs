@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2018 Kubos Corporation
+ * Copyright (C) 2019 Kubos Corporation
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -20,6 +20,7 @@ extern crate juniper;
 
 mod app_entry;
 mod error;
+mod monitor;
 mod objects;
 mod registry;
 mod schema;
@@ -27,11 +28,9 @@ mod schema;
 mod tests;
 
 use crate::registry::AppRegistry;
-use failure::{bail, Error};
-use getopts::Options;
+use failure::Error;
 use kubos_service::{Config, Service};
 use log::error;
-use std::env;
 use syslog::Facility;
 
 fn main() -> Result<(), Error> {
@@ -42,35 +41,27 @@ fn main() -> Result<(), Error> {
     )
     .unwrap();
 
-    let args: Vec<String> = env::args().collect();
-    let mut opts = Options::new();
-
-    opts.optflag("b", "onboot", "Execute OnBoot logic");
-    opts.optopt("c", "config", "Path to config file", "CONFIG");
-    let matches = match opts.parse(&args[1..]) {
-        Ok(m) => m,
-        Err(err) => {
-            bail!("Unable to parse command options: {}", err);
-        }
-    };
-
-    let config = match matches.opt_str("c") {
-        Some(file) => Config::new_from_path("app-service", file),
-        None => Config::new("app-service"),
-    };
+    let config = Config::new("app-service").map_err(|err| {
+        error!("Failed to load service config: {:?}", err);
+        err
+    })?;
 
     let registry = {
         match config.get("registry-dir") {
-            Some(dir) => AppRegistry::new_from_dir(dir.as_str().unwrap())?,
-            None => AppRegistry::new()?,
+            Some(dir) => AppRegistry::new_from_dir(dir.as_str().unwrap()).map_err(|err| {
+                error!(
+                    "Failed to create app registry at {}: {:?}",
+                    dir.as_str().unwrap(),
+                    err
+                );
+                err
+            })?,
+            None => AppRegistry::new().map_err(|err| {
+                error!("Failed to create default app registry: {:?}", err);
+                err
+            })?,
         }
     };
-
-    if matches.opt_present("b") {
-        registry
-            .run_onboot()
-            .unwrap_or_else(|err| error!("Error starting applications: {}", err));
-    }
 
     Service::new(config, registry, schema::QueryRoot, schema::MutationRoot).start();
 

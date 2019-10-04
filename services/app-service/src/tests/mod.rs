@@ -29,7 +29,7 @@ macro_rules! mock_service {
         );
 
         Service::new(
-            Config::new_from_str("app-service", &config),
+            Config::new_from_str("app-service", &config).unwrap(),
             registry,
             schema::QueryRoot,
             schema::MutationRoot,
@@ -65,7 +65,6 @@ macro_rules! test {
 }
 
 mod register_app;
-mod registry_onboot;
 mod registry_start_app;
 mod registry_test;
 mod set_version;

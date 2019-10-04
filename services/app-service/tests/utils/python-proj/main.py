@@ -10,26 +10,40 @@ import logging
 from sub import sub
 import sys
 
-def on_boot():
+def main():
     
-    sub.test_func()
-    sys.exit(0)
-    
-def on_command(args):
-    
+    logger = app_api.logging_setup("python-proj")
+
     parser = argparse.ArgumentParser()
     
+    parser.add_argument(
+        '-c',
+        '--config',
+        nargs=1,
+        help='Specifies the location of a non-default configuration file')
     parser.add_argument('-t', '--test', nargs=1)
+    parser.add_argument('-e', '--error', action='store_true')
     parser.add_argument('-f', '--flag', action='store_true')
     parser.add_argument('positional', nargs='?')
     
-    matches = parser.parse_args(args)
+    matches = parser.parse_args()
+    
+    if matches.config is not None:
+        global SERVICES
+        SERVICES = app_api.Services(matches.config[0])
+    else:
+        SERVICES = app_api.Services()
     
     success = False
     
+    sub.test_func()
+    
+    if matches.error:
+        sys.exit(123)
+
     if matches.flag:
         success = True
-        
+
     if matches.test is not None and matches.test[0] == "test":
         success = True
         
@@ -40,28 +54,6 @@ def on_command(args):
         sys.exit(0)
     else:
         logging.error("No valid arguments were found")
-        sys.exit(1)
-
-def main():
-
-    parser = argparse.ArgumentParser()
-    
-    parser.add_argument(
-        '-r',
-        '--run',
-        nargs=1,
-        help='Determines run behavior. Either "OnBoot" or "OnCommand"',
-        required=True)
-    parser.add_argument('cmd_args', nargs='*')
-    
-    args = parser.parse_args()
-    
-    if args.run[0] == 'OnBoot':
-        on_boot()
-    elif args.run[0] == 'OnCommand':
-        on_command(args.cmd_args)
-    else:
-        print("Unknown run level specified")
         sys.exit(1)
     
 if __name__ == "__main__":

@@ -16,10 +16,13 @@
 
 use crate::app_entry::*;
 use crate::error::*;
+use crate::monitor::*;
+use chrono::Utc;
 use failure::format_err;
 use fs_extra;
-use kubos_app::RunLevel;
 use log::*;
+use nix::sys::signal;
+use nix::unistd::Pid;
 use std::fs;
 use std::io::Read;
 use std::os::unix;
@@ -31,13 +34,15 @@ use std::time::Duration;
 use toml;
 
 /// The default application registry directory in KubOS
-pub const K_APPS_DIR: &str = "/home/system/kubos/apps";
+pub static K_APPS_DIR: &str = "/home/system/kubos/apps";
+pub static DEFAULT_CONFIG: &str = "/home/system/etc/config.toml";
 
 /// AppRegistry
 #[derive(Clone, Debug)]
 pub struct AppRegistry {
     #[doc(hidden)]
     pub entries: Arc<Mutex<Vec<AppRegistryEntry>>>,
+    pub monitoring: Arc<Mutex<Vec<MonitorEntry>>>,
     /// The managed root directory of the AppRegistry
     pub apps_dir: String,
 }
@@ -58,6 +63,7 @@ impl AppRegistry {
     pub fn new_from_dir(apps_dir: &str) -> Result<AppRegistry, AppError> {
         let registry = AppRegistry {
             entries: Arc::new(Mutex::new(Vec::new())),
+            monitoring: Arc::new(Mutex::new(Vec::new())),
             apps_dir: String::from(apps_dir),
         };
 
@@ -238,9 +244,16 @@ impl AppRegistry {
         // Make sure the file which should be called for execution is present in the directory
         if !app_path.join(app_exec.clone()).exists() {
             return Err(AppError::RegisterError {
-                err: format!("Application file {} not found in given path", app_name),
+                err: format!("Application file {} not found in given path", app_exec),
             });
         }
+
+        // Check for a custom configuration file
+        let config = if let Some(path) = metadata.config {
+            path
+        } else {
+            DEFAULT_CONFIG.to_owned()
+        };
 
         let mut entries = self.entries.lock().map_err(|err| AppError::RegisterError {
             err: format!("Couldn't get entries mutex: {:?}", err),
@@ -302,6 +315,7 @@ impl AppRegistry {
                 executable: format!("{}/{}", app_dir_str, app_exec),
                 version: metadata.version,
                 author: metadata.author,
+                config,
             },
             active_version: true,
         };
@@ -346,13 +360,13 @@ impl AppRegistry {
     /// ```
     ///
     pub fn uninstall(&self, app_name: &str, version: &str) -> Result<bool, AppError> {
-        let mut errors = None;
+        let mut errors: Vec<String> = vec![];
 
         // Delete the application files
         let app_dir = format!("{}/{}/{}", self.apps_dir, app_name, version);
 
         if let Err(error) = fs::remove_dir_all(app_dir) {
-            errors = Some(format!("Failed to remove app directory: {}", error));
+            errors.push(format!("Failed to remove app directory: {}", error));
         }
 
         // If that was the last version, also remove the parent directory.
@@ -361,7 +375,7 @@ impl AppRegistry {
         if fs::remove_dir(format!("{}/{}", self.apps_dir, app_name)).is_ok() {
             // That worked, so we also want to remove the active version symlink
             if let Err(error) = fs::remove_file(format!("{}/active/{}", self.apps_dir, app_name)) {
-                errors = Some(format!(
+                errors.push(format!(
                     "{}. Failed to remove active symlink for {}: {}",
                     error, app_name, error
                 ));
@@ -384,23 +398,36 @@ impl AppRegistry {
                 entries.remove(index);
             }
             None => {
-                if let Some(error) = errors {
-                    errors = Some(format!(
-                        "{}. {} version {} not found in registry",
-                        error, app_name, version
-                    ));
-                } else {
-                    errors = Some(format!(
-                        "{} version {} not found in registry",
-                        app_name, version
-                    ));
+                errors.push(format!(
+                    "{} version {} not found in registry",
+                    app_name, version
+                ));
+            }
+        }
+
+        // Kill any instances of this version of the app which are still running
+        if let Ok(Some(entry)) = find_running(&self.monitoring, app_name) {
+            if entry.version == version {
+                if let Some(pid) = entry.pid {
+                    let pid = Pid::from_raw(pid);
+                    if let Err(err) = signal::kill(pid, signal::Signal::SIGKILL) {
+                        errors.push(format!("Failed to kill {}: {:?}", app_name, err));
+                    }
                 }
             }
         }
 
-        match errors {
-            Some(err) => Err(AppError::UninstallError { err }),
-            None => Ok(true),
+        // Remove the app entry from the monitoring list
+        // Note: If the app was never run, then no entry will be present
+        if let Err(new_error) = remove_entry(&self.monitoring, app_name, version) {
+            errors.push(new_error.to_string());
+        }
+
+        if errors.is_empty() {
+            Ok(true)
+        } else {
+            let err: String = errors.join(". ");
+            Err(AppError::UninstallError { err })
         }
     }
 
@@ -444,6 +471,21 @@ impl AppRegistry {
                 entries.retain(|entry| entry.app.name != app_name);
             }
             Err(err) => errors.push(format!("Couldn't get entries mutex: {:?}", err)),
+        }
+
+        // Kill any instances of the app which are still running
+        if let Ok(Some(entry)) = find_running(&self.monitoring, app_name) {
+            if let Some(pid) = entry.pid {
+                let pid = Pid::from_raw(pid);
+                if let Err(err) = signal::kill(pid, signal::Signal::SIGKILL) {
+                    errors.push(format!("Failed to kill {}: {:?}", app_name, err));
+                }
+            }
+        }
+
+        // Remove all matching app entries from the monitoring list
+        if let Err(new_error) = remove_entries(&self.monitoring, app_name) {
+            errors.push(new_error.to_string());
         }
 
         if errors.is_empty() {
@@ -520,26 +562,27 @@ impl AppRegistry {
         Ok(())
     }
 
-    /// Start an application. If successful, returns the pid of the application process.
+    /// Start an application. If successful, returns the PID of the application process.
     ///
     /// # Arguments
     ///
     /// * `app_name` - The name of the app to start
-    /// * `run_level` - Which Run Level to run the app with
+    /// * `config` - (Optional) The custom config file path to use
+    /// * `args` - (Optional) Arguments which should be passed to the application
     ///
     /// # Examples
     ///
     /// ```
-    /// # use kubos_app::registry::{AppRegistry, RunLevel};
+    /// # use kubos_app::registry::AppRegistry;
     /// let registry = AppRegistry::new();
-    /// registry.start_app("my-app", RunLevel::OnCommand);
+    /// registry.start_app("my-app", None, None);
     /// ```
     pub fn start_app(
         &self,
         app_name: &str,
-        run_level: &RunLevel,
+        config: Option<String>,
         args: Option<Vec<String>>,
-    ) -> Result<u32, AppError> {
+    ) -> Result<Option<i32>, AppError> {
         // Look up the active version of the requested application
         let app = {
             let entries = self.entries.lock().map_err(|err| AppError::StartError {
@@ -585,11 +628,36 @@ impl AppRegistry {
             warn!("Failed to set cwd before executing {}: {:?}", app_name, err);
         }
 
+        // Check if app is already running
+        let running_status = find_running(&self.monitoring, app_name);
+        match running_status {
+            Ok(None) => {}
+            Ok(Some(_)) => {
+                return Err(AppError::StartError {
+                    err: format!("Instance of {} already running", app_name),
+                });
+            }
+            Err(err) => {
+                // The only way this happens is if the monitoring registry mutex gets poisoned.
+                // In that case, we want to crash this service so that it can be restarted in a
+                // good state.
+                error!("Crashing service: {:?}", err);
+                panic!("{:?}", err);
+            }
+        }
+
         let mut cmd = Command::new(app_path);
 
-        cmd.arg("-r").arg(format!("{}", run_level));
+        let config_path = match config {
+            // Use the requested config file
+            Some(path) => path,
+            // Use the config file which was set when the app was registered
+            None => app.config.clone(),
+        };
 
-        if let Some(add_args) = args {
+        cmd.arg("-c").arg(config_path.clone());
+
+        if let Some(add_args) = args.clone() {
             cmd.args(&add_args);
         }
 
@@ -597,8 +665,35 @@ impl AppRegistry {
             err: format!("Failed to spawn app: {:?}", err),
         })?;
 
+        let start_time = Utc::now();
+        info!(
+            "Starting {}. Config: {:?}, Args: {:?}",
+            app_name, config_path, args
+        );
+
+        // Add/update the monitoring registry with the new run info
+        let entry = MonitorEntry {
+            start_time,
+            end_time: None,
+            name: app.name.clone(),
+            version: app.version.clone(),
+            running: true,
+            pid: Some(child.id() as i32),
+            last_rc: None,
+            last_signal: None,
+            args,
+            config: config_path,
+        };
+        if let Err(error) = start_entry(&self.monitoring, &entry) {
+            // The only way this happens is if the monitoring registry mutex gets poisoned.
+            // In that case, we want to crash this service so that it can be restarted in a
+            // good state.
+            error!("Crashing service: {:?}", error);
+            panic!("{:?}", error);
+        }
+
         // Give the app a moment to run
-        thread::sleep(Duration::from_millis(100));
+        thread::sleep(Duration::from_millis(300));
 
         // See if the app already exited
         //
@@ -606,67 +701,59 @@ impl AppRegistry {
         //   - Ok(Some(status)) - App exited. Status is the exit code.
         //   - Ok(None) - App is still running
         //   - Err(err) - Something went wrong while trying to check if the app is still running.
-        //                We're going to go ahead and assume that it is.
-        if let Some(status) = child.try_wait().unwrap_or(None) {
-            if !status.success() {
-                Err(AppError::StartError {
-                    err: format!("App returned {}", status),
-                })
-            } else {
-                Ok(child.id())
+        match child.try_wait() {
+            Ok(Some(status)) => {
+                finish_entry(&self.monitoring, app_name, &app.version, status)?;
+
+                if !status.success() {
+                    Err(AppError::StartError {
+                        err: format!("App returned {}", status),
+                    })
+                } else {
+                    Ok(None)
+                }
             }
-        } else {
-            Ok(child.id())
+            Ok(None) => {
+                let name = app_name.to_owned();
+                let pid = child.id() as i32;
+                let registry = self.monitoring.clone();
+
+                // Spawn monitor thread
+                thread::spawn(move || {
+                    let result = monitor_app(registry, child, &name, &app.version);
+
+                    if let Err(error) = result {
+                        error!("{:?}", error);
+                    }
+                });
+
+                Ok(Some(pid))
+            }
+            Err(err) => Err(AppError::StartError {
+                err: format!(
+                    "Started app, but failed to fetch status information: {:?}",
+                    err
+                ),
+            }),
         }
     }
 
-    /// Call the active version of all registered applications with the "OnBoot" run level
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// # use kubos_app::registry::{AppRegistry, RunLevel};
-    /// let registry = AppRegistry::new();
-    /// registry.run_onboot();
-    /// ```
-    pub fn run_onboot(&self) -> Result<(), AppError> {
-        let mut apps_started = 0;
-        let mut apps_not_started = 0;
+    pub fn kill_app(&self, name: &str, signal: Option<i32>) -> Result<(), AppError> {
+        // Lookup the app in the monitoring registry to get the PID to kill
+        let app = find_running(&self.monitoring, name)?.ok_or(AppError::KillError {
+            err: "No matching monitoring entry found".to_owned(),
+        })?;
 
-        let active_symlink = PathBuf::from(format!("{}/active", self.apps_dir));
-        if !active_symlink.exists() {
-            return Err(AppError::FileError {
-                err: "Failed to get list of active applications".to_owned(),
-            });
-        }
+        let pid = app.pid.ok_or(AppError::KillError {
+            err: "No active PID found in registry".to_owned(),
+        })?;
 
-        for entry in fs::read_dir(active_symlink)? {
-            match entry {
-                Ok(file) => {
-                    let name = file.file_name();
-                    match self.start_app(&name.to_string_lossy(), &RunLevel::OnBoot, None) {
-                        Ok(_) => apps_started += 1,
-                        Err(error) => {
-                            error!("Failed to start {}: {}", name.to_string_lossy(), error);
-                            apps_not_started += 1
-                        }
-                    }
-                }
-                Err(_) => apps_not_started += 1,
-            }
-        }
+        let pid = Pid::from_raw(pid);
+        let sig = signal::Signal::from_c_int(signal.unwrap_or(15) as i32)
+            .unwrap_or(signal::Signal::SIGTERM);
 
-        info!(
-            "Apps started: {}, Apps failed: {}",
-            apps_started, apps_not_started
-        );
-
-        if apps_not_started != 0 {
-            return Err(AppError::SystemError {
-                err: format!("Failed to start {} app/s", apps_not_started),
-            });
-        }
-
-        Ok(())
+        signal::kill(pid, sig).map_err(|err| AppError::KillError {
+            err: err.to_string(),
+        })
     }
 }

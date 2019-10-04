@@ -29,9 +29,10 @@ use std::thread;
 use std::time::Duration;
 
 /// Type definition for a "read" function pointer.
-pub type ReadFn<Connection> = Fn(&Connection) -> CommsResult<Vec<u8>> + Send + Sync + 'static;
+pub type ReadFn<Connection> = dyn Fn(&Connection) -> CommsResult<Vec<u8>> + Send + Sync + 'static;
 /// Type definition for a "write" function pointer.
-pub type WriteFn<Connection> = Fn(&Connection, &[u8]) -> CommsResult<()> + Send + Sync + 'static;
+pub type WriteFn<Connection> =
+    dyn Fn(&Connection, &[u8]) -> CommsResult<()> + Send + Sync + 'static;
 
 /// Struct that holds configuration data to allow users to set up a Communication Service.
 #[derive(Clone)]
@@ -194,7 +195,7 @@ fn read_thread<Connection: Clone + Send + 'static, Packet: LinkPacket + Send + '
         };
 
         // Validate the link packet
-        if packet.validate() != true {
+        if !packet.validate() {
             log_telemetry(&data, &TelemType::UpFailed).unwrap();
             log_error(&data, CommsServiceError::InvalidChecksum.to_string()).unwrap();
             error!("Packet checksum failed");
@@ -216,7 +217,20 @@ fn read_thread<Connection: Clone + Send + 'static, Packet: LinkPacket + Send + '
                 error!("Unknown payload type encountered: {}", value);
             }
             PayloadType::UDP => {
-                unimplemented!();
+                let sat_ref = comms.ip;
+                let data_ref = data.clone();
+
+                thread::spawn(move || match handle_udp_passthrough(packet, sat_ref) {
+                    Ok(_) => {
+                        log_telemetry(&data_ref, &TelemType::Down).unwrap();
+                        info!("UDP Packet successfully uplinked");
+                    }
+                    Err(e) => {
+                        log_telemetry(&data_ref, &TelemType::DownFailed).unwrap();
+                        log_error(&data_ref, e.to_string()).unwrap();
+                        error!("UDP packet failed to uplink: {}", e.to_string());
+                    }
+                });
             }
             PayloadType::GraphQL => {
                 if let Ok(mut num_handlers) = num_handlers.lock() {
@@ -295,6 +309,21 @@ fn handle_graphql_request<Connection: Clone, Packet: LinkPacket>(
 
     // Write packet to the gateway
     write(&write_conn.clone(), &packet).map_err(|e| e.to_string())
+}
+
+// This function takes a Packet with PayloadType::UDP and sends the payload over a
+// UdpSocket to the specified destination.
+#[allow(clippy::boxed_local)]
+fn handle_udp_passthrough<Packet: LinkPacket>(
+    message: Box<Packet>,
+    sat_ip: Ipv4Addr,
+) -> Result<(), String> {
+    let socket = UdpSocket::bind((sat_ip, 0)).map_err(|e| e.to_string())?;
+
+    socket
+        .send_to(&message.payload(), (sat_ip, message.destination()))
+        .map_err(|e| e.to_string())
+        .map(|_c| ())
 }
 
 // This thread reads indefinitely from a UDP socket, creating link packets from

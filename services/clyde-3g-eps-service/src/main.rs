@@ -14,7 +14,7 @@
 // limitations under the License.
 //
 
-//! Service for interacting with a [Clyde Space 3G EPS](https://www.clyde.space/products/5-3rd-generation-3u-eps)
+//! Service for interacting with a [Clyde Space 3G EPS](https://www.aac-clyde.space/satellite-bits/eps)
 //!
 //! # Configuration
 //!
@@ -414,6 +414,7 @@ use crate::models::subsystem::Subsystem;
 use crate::schema::mutation::Root as MutationRoot;
 use crate::schema::query::Root as QueryRoot;
 use kubos_service::{Config, Service};
+use log::error;
 use syslog::Facility;
 
 fn main() {
@@ -424,13 +425,35 @@ fn main() {
     )
     .unwrap();
 
-    let config = Config::new("clyde-3g-eps-service");
+    let config = Config::new("clyde-3g-eps-service")
+        .map_err(|err| {
+            error!("Failed to load service config: {:?}", err);
+            err
+        })
+        .unwrap();
     let bus = config
         .get("bus")
-        .expect("No EPS bus device path found in config");
-    let bus = bus.as_str().unwrap();
+        .ok_or_else(|| {
+            error!("Failed to load 'bus' config value");
+            "Failed to load 'bus' config value"
+        })
+        .unwrap();
+    let bus = bus
+        .as_str()
+        .ok_or_else(|| {
+            error!("Failed to parse 'bus' config value");
+            "Failed to parse 'bus' config value"
+        })
+        .unwrap();
 
-    let subsystem: Box<Subsystem> = Box::new(Subsystem::from_path(bus).unwrap());
+    let subsystem: Box<Subsystem> = Box::new(
+        Subsystem::from_path(bus)
+            .map_err(|err| {
+                error!("Failed to create subsystem: {:?}", err);
+                err
+            })
+            .unwrap(),
+    );
 
     Service::new(config, subsystem, QueryRoot, MutationRoot).start();
 }

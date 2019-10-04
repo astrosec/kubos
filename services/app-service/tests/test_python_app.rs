@@ -38,6 +38,11 @@ fn setup_app(registry_dir: &Path) {
 
     // Copy our app files into our app registry
     fs::copy("tests/utils/python-proj/main.py", app_dir.join("main.py")).unwrap();
+    fs::copy(
+        "tests/utils/python-proj/config.toml",
+        app_dir.join("config.toml"),
+    )
+    .unwrap();
     fs_extra::dir::copy(
         "tests/utils/python-proj/sub",
         app_dir.clone(),
@@ -49,55 +54,18 @@ fn setup_app(registry_dir: &Path) {
     let toml = format!(
         r#"
             active_version = true
-            run_level = "onCommand"
 
             [app]
             executable = "{}/python-proj/1.0/main.py"
             name = "python-proj"
             version = "1.0"
             author = "user"
+            config = "/home/system/etc/config.toml"
             "#,
         registry_dir.to_string_lossy(),
     );
 
     fs::write(app_dir.join("app.toml"), toml).unwrap();
-}
-
-#[test]
-fn app_no_args() {
-    let mut fixture = AppServiceFixture::setup();
-    let config = ServiceConfig::new_from_path(
-        "app-service",
-        format!(
-            "{}",
-            fixture
-                .registry_dir
-                .path()
-                .join("config.toml")
-                .to_string_lossy()
-        ),
-    );
-
-    setup_app(&fixture.registry_dir.path());
-
-    fixture.start_service(true);
-
-    let result = send_query(
-        config,
-        r#"mutation {
-            startApp(name: "python-proj", runLevel: "OnBoot") {
-                errors,
-                success
-            }
-        }"#,
-    );
-
-    // Give the app a moment to run successfully before we tear everything down
-    thread::sleep(Duration::from_millis(100));
-
-    fixture.teardown();
-
-    assert!(result["startApp"]["success"].as_bool().unwrap());
 }
 
 #[test]
@@ -113,23 +81,24 @@ fn app_single_pos_arg() {
                 .join("config.toml")
                 .to_string_lossy()
         ),
-    );
+    )
+    .unwrap();
 
     setup_app(&fixture.registry_dir.path());
 
-    fixture.start_service(true);
+    fixture.start_service();
 
     let result = send_query(
         config,
         r#"mutation {
-            startApp(name: "python-proj", runLevel: "OnCommand", args: ["pos"]) {
+            startApp(name: "python-proj", config: "config.toml", args: ["pos"]) {
                 errors,
                 success
             }
         }"#,
     );
 
-    thread::sleep(Duration::from_millis(100));
+    thread::sleep(Duration::from_millis(400));
 
     fixture.teardown();
 
@@ -149,23 +118,24 @@ fn app_single_flag() {
                 .join("config.toml")
                 .to_string_lossy()
         ),
-    );
+    )
+    .unwrap();
 
     setup_app(&fixture.registry_dir.path());
 
-    fixture.start_service(true);
+    fixture.start_service();
 
     let result = send_query(
         config,
         r#"mutation {
-            startApp(name: "python-proj", runLevel: "OnCommand", args: ["-f"]) {
+            startApp(name: "python-proj", config: "config.toml", args: ["-f"]) {
                 errors,
                 success
             }
         }"#,
     );
 
-    thread::sleep(Duration::from_millis(100));
+    thread::sleep(Duration::from_millis(400));
 
     fixture.teardown();
 
@@ -185,25 +155,68 @@ fn app_flag_arg() {
                 .join("config.toml")
                 .to_string_lossy()
         ),
-    );
+    )
+    .unwrap();
 
     setup_app(&fixture.registry_dir.path());
 
-    fixture.start_service(true);
+    fixture.start_service();
 
     let result = send_query(
         config,
         r#"mutation {
-            startApp(name: "python-proj", runLevel: "OnCommand", args: ["-t", "test"]) {
+            startApp(name: "python-proj", config: "config.toml", args: ["-t", "test"]) {
                 errors,
                 success
             }
         }"#,
     );
 
-    thread::sleep(Duration::from_millis(100));
+    thread::sleep(Duration::from_millis(400));
 
     fixture.teardown();
 
     assert!(result["startApp"]["success"].as_bool().unwrap());
+}
+
+#[test]
+#[ignore]
+fn app_failure() {
+    let mut fixture = AppServiceFixture::setup();
+    let config = ServiceConfig::new_from_path(
+        "app-service",
+        format!(
+            "{}",
+            fixture
+                .registry_dir
+                .path()
+                .join("config.toml")
+                .to_string_lossy()
+        ),
+    )
+    .unwrap();
+
+    setup_app(&fixture.registry_dir.path());
+
+    fixture.start_service();
+
+    // -e forces an error.
+    let result = send_query(
+        config,
+        r#"mutation {
+            startApp(name: "python-proj", config: "config.toml", args: ["-e"]) {
+                errors,
+                success
+            }
+        }"#,
+    );
+
+    thread::sleep(Duration::from_millis(400));
+
+    fixture.teardown();
+
+    assert_eq!(
+        result["startApp"]["errors"].as_str().unwrap(),
+        "Failed to start app: App returned exit code: 123"
+    );
 }

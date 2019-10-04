@@ -1,16 +1,8 @@
-#!/usr/bin/env python
+#!/usr/bin/env python3
 
 import app_api
 import argparse
 import sys
-
-def on_boot(logger):
-    
-    logger.info("OnBoot logic")
-    
-def on_command(logger):
-    
-    logger.info("OnCommand logic")
 
 def main():
 
@@ -18,18 +10,17 @@ def main():
     
     parser = argparse.ArgumentParser()
     
-    parser.add_argument('--run', '-r')
-    parser.add_argument('cmd_args', nargs='*')
+    parser.add_argument('--config', '-c', nargs=1)
     
     args = parser.parse_args()
     
-    if args.run == 'OnBoot':
-        on_boot(logger)
-    elif args.run == 'OnCommand':
-        on_command(logger)
+    if args.config is not None:
+        global SERVICES
+        SERVICES = app_api.Services(args.config[0])
     else:
-        logger.error("Unknown run level specified")
-        sys.exit(1)
+        SERVICES = app_api.Services()
+    
+    logger.info("Starting mission logic")
     
 if __name__ == "__main__":
     main()

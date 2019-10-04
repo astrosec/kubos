@@ -16,13 +16,65 @@
 #![deny(warnings)]
 
 use kubos_app::ServiceConfig;
+use nix::sys::signal;
+use nix::unistd::Pid;
 use std::fs;
 use std::panic;
+use std::path::Path;
+use std::process::Command;
 
 use tempfile::TempDir;
 
 mod utils;
 pub use crate::utils::*;
+
+fn setup_app(registry_dir: &Path) {
+    // Build our test project
+    Command::new("cargo")
+        .arg("build")
+        .current_dir("tests/utils/rust-proj")
+        .status()
+        .unwrap();
+
+    // Add our project to the app registry
+    let app_dir = registry_dir.join("rust-proj/1.0");
+
+    fs::create_dir_all(app_dir.clone()).unwrap();
+
+    // Copy our app executable into our app registry
+    fs::copy(
+        "tests/utils/rust-proj/target/debug/rust-proj",
+        app_dir.join("rust-proj"),
+    )
+    .unwrap();
+
+    // Copy our test file to make sure we can access it later
+    fs::copy("tests/utils/rust-proj/testfile", app_dir.join("testfile")).unwrap();
+
+    // Copy our config file to make sure we can access it later
+    fs::copy(
+        "tests/utils/rust-proj/config.toml",
+        app_dir.join("config.toml"),
+    )
+    .unwrap();
+
+    // Create our manifest file
+    let toml = format!(
+        r#"
+            active_version = true
+
+            [app]
+            executable = "{}/rust-proj/1.0/rust-proj"
+            name = "rust-proj"
+            version = "1.0"
+            author = "user"
+            config = "/home/system/etc/config.toml"
+            "#,
+        registry_dir.to_string_lossy(),
+    );
+
+    fs::write(app_dir.join("app.toml"), toml).unwrap();
+}
 
 #[test]
 fn uninstall_last_app() {
@@ -36,13 +88,10 @@ fn uninstall_last_app() {
             .to_string_lossy()
     );
     let mut app = MockAppBuilder::new("dummy");
-    app.active(true)
-        .run_level("OnBoot")
-        .version("0.0.1")
-        .author("user");
+    app.active(true).version("0.0.1").author("user");
 
     app.install(&fixture.registry_dir.path());
-    fixture.start_service(false);
+    fixture.start_service();
 
     // Make sure our app directory and active symlink exist
     assert_eq!(fixture.registry_dir.path().join("dummy").exists(), true);
@@ -53,7 +102,7 @@ fn uninstall_last_app() {
 
     let result = panic::catch_unwind(|| {
         let result = send_query(
-            ServiceConfig::new_from_path("app-service", config.to_owned()),
+            ServiceConfig::new_from_path("app-service", config.to_owned()).unwrap(),
             r#"mutation {
             uninstall(name: "dummy", version: "0.0.1") {
                 errors,
@@ -65,11 +114,17 @@ fn uninstall_last_app() {
         assert!(result["uninstall"]["success"].as_bool().unwrap());
 
         let result = send_query(
-            ServiceConfig::new_from_path("app-service", config.to_owned()),
-            "{ apps { active } }",
+            ServiceConfig::new_from_path("app-service", config.to_owned()).unwrap(),
+            "{ registeredApps { active } }",
         );
 
-        assert_eq!(result["apps"].as_array().expect("Not an array").len(), 0);
+        assert_eq!(
+            result["registeredApps"]
+                .as_array()
+                .expect("Not an array")
+                .len(),
+            0
+        );
     });
 
     // Our app directory should now no longer exist
@@ -102,28 +157,22 @@ fn uninstall_notlast_app() {
             .to_string_lossy()
     );
     let mut app = MockAppBuilder::new("dummy");
-    app.active(true)
-        .run_level("OnBoot")
-        .version("0.0.1")
-        .author("user");
+    app.active(true).version("0.0.1").author("user");
 
     app.install(&fixture.registry_dir.path());
 
     let mut app = MockAppBuilder::new("dummy");
-    app.active(true)
-        .run_level("OnBoot")
-        .version("0.0.2")
-        .author("user");
+    app.active(true).version("0.0.2").author("user");
 
     app.install(&fixture.registry_dir.path());
-    fixture.start_service(false);
+    fixture.start_service();
 
     // Make sure our app directory exists
     assert_eq!(fixture.registry_dir.path().join("dummy").exists(), true);
 
     let result = panic::catch_unwind(|| {
         let result = send_query(
-            ServiceConfig::new_from_path("app-service", config.to_owned()),
+            ServiceConfig::new_from_path("app-service", config.to_owned()).unwrap(),
             r#"mutation {
             uninstall(name: "dummy", version: "0.0.1") {
                 errors,
@@ -135,11 +184,11 @@ fn uninstall_notlast_app() {
         assert!(result["uninstall"]["success"].as_bool().unwrap());
 
         let result = send_query(
-            ServiceConfig::new_from_path("app-service", config.to_owned()),
-            "{ apps { active } }",
+            ServiceConfig::new_from_path("app-service", config.to_owned()).unwrap(),
+            "{ registeredApps { active } }",
         );
 
-        assert_eq!(result["apps"][0]["active"], true);
+        assert_eq!(result["registeredApps"][0]["active"], true);
     });
 
     // Our app directory should still exist since there's a version left in the registry
@@ -161,28 +210,22 @@ fn uninstall_all_app() {
             .to_string_lossy()
     );
     let mut app = MockAppBuilder::new("dummy");
-    app.active(true)
-        .run_level("OnBoot")
-        .version("0.0.1")
-        .author("user");
+    app.active(true).version("0.0.1").author("user");
 
     app.install(&fixture.registry_dir.path());
 
     let mut app = MockAppBuilder::new("dummy");
-    app.active(true)
-        .run_level("OnBoot")
-        .version("0.0.2")
-        .author("user");
+    app.active(true).version("0.0.2").author("user");
 
     app.install(&fixture.registry_dir.path());
-    fixture.start_service(false);
+    fixture.start_service();
 
     // Make sure our app directory exists
     assert_eq!(fixture.registry_dir.path().join("dummy").exists(), true);
 
     let result = panic::catch_unwind(|| {
         let result = send_query(
-            ServiceConfig::new_from_path("app-service", config.to_owned()),
+            ServiceConfig::new_from_path("app-service", config.to_owned()).unwrap(),
             r#"mutation {
             uninstall(name: "dummy") {
                 errors,
@@ -194,11 +237,17 @@ fn uninstall_all_app() {
         assert!(result["uninstall"]["success"].as_bool().unwrap());
 
         let result = send_query(
-            ServiceConfig::new_from_path("app-service", config.to_owned()),
-            "{ apps { active } }",
+            ServiceConfig::new_from_path("app-service", config.to_owned()).unwrap(),
+            "{ registeredApps { active } }",
         );
 
-        assert_eq!(result["apps"].as_array().expect("Not an array").len(), 0);
+        assert_eq!(
+            result["registeredApps"]
+                .as_array()
+                .expect("Not an array")
+                .len(),
+            0
+        );
     });
 
     // Our app directory should now no longer exist
@@ -222,29 +271,20 @@ fn uninstall_new_app() {
 
     // Pre-load the app registry
     let mut app = MockAppBuilder::new("dummy");
-    app.active(true)
-        .run_level("OnBoot")
-        .version("0.0.2")
-        .author("user");
+    app.active(true).version("0.0.2").author("user");
 
     app.install(&fixture.registry_dir.path());
 
     let mut app = MockAppBuilder::new("dummy");
-    app.active(true)
-        .run_level("OnBoot")
-        .version("0.0.3")
-        .author("user");
+    app.active(true).version("0.0.3").author("user");
 
     app.install(&fixture.registry_dir.path());
 
     let mut app = MockAppBuilder::new("dummy2");
-    app.active(true)
-        .run_level("OnBoot")
-        .version("0.0.2")
-        .author("user");
+    app.active(true).version("0.0.2").author("user");
 
     app.install(&fixture.registry_dir.path());
-    fixture.start_service(false);
+    fixture.start_service();
 
     // Create a new version of our app to be installed
     let app_dir = TempDir::new().unwrap();
@@ -266,7 +306,7 @@ fn uninstall_new_app() {
     let result = panic::catch_unwind(|| {
         // Register the new version of the app
         let result = send_query(
-            ServiceConfig::new_from_path("app-service", config.to_owned()),
+            ServiceConfig::new_from_path("app-service", config.to_owned()).unwrap(),
             &format!(
                 r#"mutation {{
                 register(path: "{}") {{
@@ -290,7 +330,7 @@ fn uninstall_new_app() {
 
         // Uninstall the version we just registered
         let result = send_query(
-            ServiceConfig::new_from_path("app-service", config.to_owned()),
+            ServiceConfig::new_from_path("app-service", config.to_owned()).unwrap(),
             r#"mutation {
             uninstall(name: "dummy", version: "0.0.1") {
                 errors,
@@ -307,4 +347,270 @@ fn uninstall_new_app() {
 
     fixture.teardown();
     assert!(result.is_ok());
+}
+
+#[test]
+fn uninstall_unmonitor() {
+    let mut fixture = AppServiceFixture::setup();
+    let config = format!(
+        "{}",
+        fixture
+            .registry_dir
+            .path()
+            .join("config.toml")
+            .to_string_lossy()
+    );
+    let mut app = MockAppBuilder::new("dummy");
+    app.active(true).version("0.0.1").author("user");
+
+    app.install(&fixture.registry_dir.path());
+
+    fixture.start_service();
+
+    // Make sure our app directory exists
+    assert_eq!(fixture.registry_dir.path().join("dummy").exists(), true);
+
+    // Run the app so that a monitoring entry will be created
+    let result = send_query(
+        ServiceConfig::new_from_path("app-service", config.to_owned()).unwrap(),
+        r#"mutation {
+            startApp(name: "dummy") {
+                success,
+                errors
+            }
+        }"#,
+    );
+
+    assert_eq!(result["startApp"]["success"].as_bool().unwrap(), true);
+
+    let result = panic::catch_unwind(|| {
+        let result = send_query(
+            ServiceConfig::new_from_path("app-service", config.to_owned()).unwrap(),
+            r#"mutation {
+            uninstall(name: "dummy", version: "0.0.1") {
+                errors,
+                success
+            }
+        }"#,
+        );
+
+        assert!(result["uninstall"]["success"].as_bool().unwrap());
+
+        let result = send_query(
+            ServiceConfig::new_from_path("app-service", config.to_owned()).unwrap(),
+            r#"{
+                appStatus(name: "dummy") {
+                    name
+                }
+            }"#,
+        );
+
+        assert!(result["appStatus"].as_array().unwrap().is_empty());
+    });
+
+    fixture.teardown();
+    assert!(result.is_ok());
+}
+
+#[test]
+fn uninstall_all_unmonitor() {
+    let mut fixture = AppServiceFixture::setup();
+    let config = format!(
+        "{}",
+        fixture
+            .registry_dir
+            .path()
+            .join("config.toml")
+            .to_string_lossy()
+    );
+    let mut app = MockAppBuilder::new("dummy");
+    app.active(true).version("0.0.1").author("user");
+
+    app.install(&fixture.registry_dir.path());
+
+    let mut app = MockAppBuilder::new("dummy");
+    app.active(true).version("0.0.2").author("user");
+
+    app.install(&fixture.registry_dir.path());
+    fixture.start_service();
+
+    // Make sure our app directory exists
+    assert_eq!(fixture.registry_dir.path().join("dummy").exists(), true);
+
+    // Run the app so that a monitoring entry will be created
+    let result = send_query(
+        ServiceConfig::new_from_path("app-service", config.to_owned()).unwrap(),
+        r#"mutation {
+            startApp(name: "dummy") {
+                success,
+                errors
+            }
+        }"#,
+    );
+
+    assert_eq!(result["startApp"]["success"].as_bool().unwrap(), true);
+
+    let result = panic::catch_unwind(|| {
+        let result = send_query(
+            ServiceConfig::new_from_path("app-service", config.to_owned()).unwrap(),
+            r#"mutation {
+            uninstall(name: "dummy") {
+                errors,
+                success
+            }
+        }"#,
+        );
+
+        assert!(result["uninstall"]["success"].as_bool().unwrap());
+
+        let result = send_query(
+            ServiceConfig::new_from_path("app-service", config.to_owned()).unwrap(),
+            "{ registeredApps { active } }",
+        );
+
+        assert_eq!(
+            result["registeredApps"]
+                .as_array()
+                .expect("Not an array")
+                .len(),
+            0
+        );
+
+        let result = send_query(
+            ServiceConfig::new_from_path("app-service", config.to_owned()).unwrap(),
+            r#"{
+                appStatus(name: "dummy") {
+                    name
+                }
+            }"#,
+        );
+
+        assert!(result["appStatus"].as_array().unwrap().is_empty());
+    });
+
+    // Our app directory should now no longer exist
+    assert_eq!(fixture.registry_dir.path().join("dummy").exists(), false);
+
+    fixture.teardown();
+    assert!(result.is_ok());
+}
+
+#[test]
+fn uninstall_running() {
+    let mut fixture = AppServiceFixture::setup();
+    let config = ServiceConfig::new_from_path(
+        "app-service",
+        format!(
+            "{}",
+            fixture
+                .registry_dir
+                .path()
+                .join("config.toml")
+                .to_string_lossy()
+        ),
+    )
+    .unwrap();
+
+    setup_app(&fixture.registry_dir.path());
+
+    fixture.start_service();
+
+    // Run the app so that a monitoring entry will be created
+    let result = send_query(
+        config.clone(),
+        r#"mutation {
+            startApp(name: "rust-proj", args: "-l") {
+                pid
+            }
+        }"#,
+    );
+
+    let pid = result["startApp"]["pid"].as_i64().unwrap();
+
+    let result = panic::catch_unwind(|| {
+        let result = send_query(
+            config.clone(),
+            r#"mutation {
+            uninstall(name: "rust-proj", version: "1.0") {
+                errors,
+                success
+            }
+        }"#,
+        );
+
+        assert!(
+            result["uninstall"]["success"].as_bool().unwrap(),
+            "Result: {:?}",
+            result
+        );
+    });
+
+    fixture.teardown();
+
+    assert!(result.is_ok());
+
+    // App should no longer be running (ESRCH = PID not found)
+    let pid = Pid::from_raw(pid as i32);
+    let result = signal::kill(pid, signal::Signal::SIGINT);
+    assert_eq!(result, Err(nix::Error::Sys(nix::errno::Errno::ESRCH)));
+}
+
+#[test]
+fn uninstall_all_running() {
+    let mut fixture = AppServiceFixture::setup();
+    let config = ServiceConfig::new_from_path(
+        "app-service",
+        format!(
+            "{}",
+            fixture
+                .registry_dir
+                .path()
+                .join("config.toml")
+                .to_string_lossy()
+        ),
+    )
+    .unwrap();
+
+    setup_app(&fixture.registry_dir.path());
+
+    fixture.start_service();
+
+    // Run the app so that a monitoring entry will be created
+    let result = send_query(
+        config.clone(),
+        r#"mutation {
+            startApp(name: "rust-proj", args: "-l") {
+                pid
+            }
+        }"#,
+    );
+
+    let pid = result["startApp"]["pid"].as_i64().unwrap();
+
+    let result = panic::catch_unwind(|| {
+        let result = send_query(
+            config.clone(),
+            r#"mutation {
+            uninstall(name: "rust-proj") {
+                errors,
+                success
+            }
+        }"#,
+        );
+
+        assert!(
+            result["uninstall"]["success"].as_bool().unwrap(),
+            "Result: {:?}",
+            result
+        );
+    });
+
+    fixture.teardown();
+
+    assert!(result.is_ok());
+
+    // App should no longer be running (ESRCH = PID not found)
+    let pid = Pid::from_raw(pid as i32);
+    let result = signal::kill(pid, signal::Signal::SIGINT);
+    assert_eq!(result, Err(nix::Error::Sys(nix::errno::Errno::ESRCH)));
 }
