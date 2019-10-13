@@ -1,8 +1,36 @@
-mutation
-{
-  startApp(name: "kubos-makeLED", runLevel: "OnCommand" args:"-soff" ) {
+#Register the mission application
+
+mutation {
+  register(path: "/home/kubos/blinkleds") {
     success,
     errors,
+    entry {
+      app {
+        name,
+        executable
+      }
+    }
+  }
+}
+
+#Start the mission application with various arguments
+mutation {
+  startApp(name: "kubos-makeLED", args: "-son") {
+    success,
+    pid
+  }
+}
+
+mutation {
+  startApp(name: "kubos-makeLED", args: "-soff") {
+    success,
+    pid
+  }
+}
+
+mutation {
+  startApp(name: "kubos-makeLED", args: "-sflash") {
+    success,
     pid
   }
 }

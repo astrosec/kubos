@@ -15,7 +15,6 @@
 * April 3 2019
 * Frank Pound Modified by AstroSec for testing with Kubos
 * TODO: Shrink the dumb code with iterators/loops over the 4 LEDS
-* 10/11/19  Add whitepace to trigger source scan
 */
 
 #include<stdio.h>
@@ -34,19 +33,13 @@ void writeLED(char filename[], char value[], char ledPath[]);
 void removeTrigger();
 
 int main(int argc, char* argv[]){
-   if(argc!=3){
+   if(argc!=2){
 	printf("Usage is makeLEDC and one of:\n");
         printf("   on, off, flash or status\n");
 	printf(" e.g. makeLED flash\n");
         return 2;
    }
 
-   if(strcmp(argv[1],"-r")!=0){
-	printf("Usage is makeLEDC and one of:\n");
-        printf("   on, off, flash or status\n");
-	printf(" e.g. makeLED flash\n");
-        return 2;
-   }
 
    printf("Starting the makeLED program\n");
    printf("The current LED Path is: " LED1_PATH "\n");
@@ -55,21 +48,21 @@ int main(int argc, char* argv[]){
 
 
    // select whether command is on, off, flash or status
-   if(strcmp(argv[2],"on")==0){
+   if(strcmp(argv[1],"on")==0){
         printf("Turning the LEDs on\n");
 	removeTrigger();
         writeLED("/brightness", "1", LED1_PATH);
         writeLED("/brightness", "1", LED2_PATH);
         writeLED("/brightness", "1", LED3_PATH);
    }
-   else if (strcmp(argv[2],"off")==0){
+   else if (strcmp(argv[1],"off")==0){
         printf("Turning the LEDs off\n");
 	removeTrigger();
         writeLED("/brightness", "0", LED1_PATH);
         writeLED("/brightness", "0", LED2_PATH);
         writeLED("/brightness", "0", LED3_PATH);
    }
-   else if (strcmp(argv[2],"flash")==0){
+   else if (strcmp(argv[1],"flash")==0){
         printf("Flashing the LEDS\n");
         writeLED("/trigger", "timer", LED1_PATH);
         writeLED("/delay_on", "50", LED1_PATH);
@@ -88,7 +81,7 @@ int main(int argc, char* argv[]){
         writeLED("/delay_off", "50", LED4_PATH);
 
    }
-   else if (strcmp(argv[2],"status")==0){
+   else if (strcmp(argv[1],"status")==0){
       FILE* fp;   // see writeLED function below for description
       char  fullFileName[100];  
       char line[80];
