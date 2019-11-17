@@ -23,6 +23,7 @@ use fs_extra;
 use log::*;
 use nix::sys::signal;
 use nix::unistd::Pid;
+use std::ffi::OsStr;
 use std::fs;
 use std::io::Read;
 use std::os::unix;
@@ -31,11 +32,12 @@ use std::process::Command;
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
+use tempfile::TempDir;
 use toml;
 
 /// The default application registry directory in KubOS
 pub static K_APPS_DIR: &str = "/home/system/kubos/apps";
-pub static DEFAULT_CONFIG: &str = "/home/system/etc/config.toml";
+pub static DEFAULT_CONFIG: &str = "/etc/kubos-config.toml";
 
 /// AppRegistry
 #[derive(Clone, Debug)]
@@ -61,16 +63,27 @@ impl AppRegistry {
     /// let registry = AppRegistry::new_from_dir("/my/apps");
     /// ```
     pub fn new_from_dir(apps_dir: &str) -> Result<AppRegistry, AppError> {
+        let active_dir = PathBuf::from(format!("{}/active", apps_dir));
+        if !active_dir.exists() {
+            fs::create_dir_all(&active_dir)?;
+        }
+
+        // Create absolute path from apps_dir so symlinks work
+        let apps_path = Path::new(&apps_dir);
+        let apps_dir = apps_path
+            .canonicalize()
+            .map_err(|e| AppError::RegistryError {
+                err: format!("Failed to get absolute apps_dir: {}", e),
+            })?;
+        let apps_dir = apps_dir.to_str().ok_or_else(|| AppError::RegistryError {
+            err: format!("Failed to create absolute apps_dir path: {:?}", apps_path),
+        })?;
+
         let registry = AppRegistry {
             entries: Arc::new(Mutex::new(Vec::new())),
             monitoring: Arc::new(Mutex::new(Vec::new())),
             apps_dir: String::from(apps_dir),
         };
-
-        let active_dir = PathBuf::from(format!("{}/active", apps_dir));
-        if !active_dir.exists() {
-            fs::create_dir_all(&active_dir)?;
-        }
 
         registry
             .entries
@@ -193,7 +206,10 @@ impl AppRegistry {
     ///
     /// # Arguments
     ///
-    /// * `path` - The path to an application binary
+    /// * `path` - The path to either an application directory containing a manifest and binary,
+    ///            or the path to a .tgz file containing a manifest and binary at its root.
+    ///            (Create a flat tar file in an application directory with a command like
+    ///             'tar -czf archive.tgz *')
     ///
     /// # Examples
     ///
@@ -208,18 +224,26 @@ impl AppRegistry {
             return Err(AppError::RegisterError {
                 err: format!("{} does not exist", path),
             });
-        }
-
-        if !app_path.is_dir() {
-            return Err(AppError::RegisterError {
-                err: format!("{} is not a directory", path),
-            });
+        } else if !app_path.is_dir() {
+            // Handle tgz archives.
+            return match app_path.extension().and_then(OsStr::to_str) {
+                Some("tgz") => extract_archive(&self, path),
+                Some(extension) => Err(AppError::RegisterError {
+                                            err: format!("Provided file with extension {} is neither a directory nor a tgz archive file", extension)
+                                         }),
+                None => Err(AppError::RegisterError {
+                            err: String::from("Provided file is neither a directory nor a tgz archive file"),
+                        })
+            };
         }
 
         // Load the metadata
         let mut data = String::new();
         fs::File::open(app_path.join("manifest.toml"))
-            .and_then(|mut fp| fp.read_to_string(&mut data))?;
+            .and_then(|mut fp| fp.read_to_string(&mut data))
+            .map_err(|error| AppError::RegisterError {
+                err: format!("Unable to load manifest.toml: {}", error),
+            })?;
 
         let metadata: AppMetadata = match toml::from_str(&data) {
             Ok(val) => val,
@@ -409,8 +433,7 @@ impl AppRegistry {
         if let Ok(Some(entry)) = find_running(&self.monitoring, app_name) {
             if entry.version == version {
                 if let Some(pid) = entry.pid {
-                    let pid = Pid::from_raw(pid);
-                    if let Err(err) = signal::kill(pid, signal::Signal::SIGKILL) {
+                    if let Err(err) = uninstall_kill(pid) {
                         errors.push(format!("Failed to kill {}: {:?}", app_name, err));
                     }
                 }
@@ -476,8 +499,7 @@ impl AppRegistry {
         // Kill any instances of the app which are still running
         if let Ok(Some(entry)) = find_running(&self.monitoring, app_name) {
             if let Some(pid) = entry.pid {
-                let pid = Pid::from_raw(pid);
-                if let Err(err) = signal::kill(pid, signal::Signal::SIGKILL) {
+                if let Err(err) = uninstall_kill(pid) {
                     errors.push(format!("Failed to kill {}: {:?}", app_name, err));
                 }
             }
@@ -611,6 +633,7 @@ impl AppRegistry {
                 Err(error) => format!("{} does not exist. {}", app.executable, error),
             };
 
+            error!("{}", msg);
             return Err(AppError::StartError { err: msg });
         }
 
@@ -661,8 +684,11 @@ impl AppRegistry {
             cmd.args(&add_args);
         }
 
-        let mut child = cmd.spawn().map_err(|err| AppError::StartError {
-            err: format!("Failed to spawn app: {:?}", err),
+        let mut child = cmd.spawn().map_err(|err| {
+            error!("Failed to spawn app {}: {:?}", app_name, err);
+            AppError::StartError {
+                err: format!("Failed to spawn app: {:?}", err),
+            }
         })?;
 
         let start_time = Utc::now();
@@ -754,6 +780,71 @@ impl AppRegistry {
 
         signal::kill(pid, sig).map_err(|err| AppError::KillError {
             err: err.to_string(),
+        })
+    }
+}
+
+fn uninstall_kill(pid: i32) -> Result<(), nix::Error> {
+    let pid = Pid::from_raw(pid);
+    signal::kill(pid, Some(signal::Signal::SIGTERM))?;
+    thread::spawn(move || {
+        // Give the app 2 seconds to shut down nicely
+        thread::sleep(Duration::from_secs(2));
+        // Kill it less nicely
+        // (If the app already stopped, this call will fail and do nothing)
+        let _ = signal::kill(pid, Some(signal::Signal::SIGKILL));
+    });
+
+    Ok(())
+}
+
+fn extract_archive(registry: &AppRegistry, path: &str) -> Result<AppRegistryEntry, AppError> {
+    let tmp_dir = TempDir::new().map_err(|error| AppError::RegisterError {
+        err: format!(
+            "Error creating temporary directory to expand archive: {}",
+            error
+        ),
+    })?;
+
+    let mut command = if PathBuf::from("/usr/bin/tar").exists() {
+        Command::new("/usr/bin/tar")
+    } else if PathBuf::from("/bin/tar").exists() {
+        Command::new("/bin/tar")
+    } else {
+        return Err(AppError::RegisterError {
+            err: String::from("Error expanding archive: tar command not found"),
+        });
+    };
+
+    let output = command
+        .arg("-zxf")
+        .arg(path)
+        .arg("--directory")
+        .arg(tmp_dir.path())
+        .output()
+        .map_err(|error| AppError::RegisterError {
+            err: format!("Error expanding archive: {}", error),
+        })?;
+
+    if output.status.success() {
+        // Ensure they packaged the tarball correctly.
+        if Path::new(&tmp_dir.path().join("manifest.toml")).exists() {
+            let tmp_dir_path =
+                OsStr::to_str(tmp_dir.path().as_os_str()).ok_or(AppError::RegisterError {
+                    err: String::from("Error converting temp dir path to UTF8"),
+                })?;
+            registry.register(tmp_dir_path)
+        } else {
+            Err(AppError::RegisterError {
+                err: String::from("Manifest file manifest.toml not found in root of archive. When you create the archive, do so in the application directory, with a command like: tar -czf archive.tgz *")
+            })
+        }
+    } else {
+        Err(AppError::RegisterError {
+            err: format!(
+                "Non-successful status when expanding archive: {:?}",
+                output.status.code()
+            ),
         })
     }
 }

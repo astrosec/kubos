@@ -197,7 +197,8 @@ fn main() {
             Arg::with_name("host_port")
                 .short("-P")
                 .help("UDP port that the file transfer service will send responses to")
-                .takes_value(true),
+                .takes_value(true)
+                .default_value("8080"),
         )
         .arg(
             Arg::with_name("remote_ip")
@@ -211,7 +212,7 @@ fn main() {
                 .short("-p")
                 .help("UDP port of the file transfer service to connect to")
                 .takes_value(true)
-                .default_value("7000"),
+                .default_value("8040"),
         )
         .arg(
             Arg::with_name("storage_prefix")
@@ -223,7 +224,7 @@ fn main() {
             Arg::with_name("chunk_size")
                 .short("-c")
                 .takes_value(true)
-                .default_value("4096"),
+                .default_value("1024"),
         )
         .arg(
             Arg::with_name("hold_count")

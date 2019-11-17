@@ -18,7 +18,7 @@
 //!
 //! # Configuration
 //!
-//! The service can be configured in the `/home/system/etc/config.toml` with the following fields:
+//! The service can be configured in the `/etc/kubos-config.toml` with the following fields:
 //!
 //! ```toml
 //! [clyde-3g-eps-service]
@@ -26,7 +26,7 @@
 //!
 //! [clyde-3g-eps-service.addr]
 //! ip = "127.0.0.1"
-//! port = 8089
+//! port = 8100
 //! ```
 //!
 //! Where `bus` specifies the I2C bus the EPS is on, `ip` specifies the
@@ -39,10 +39,10 @@
 //!
 //! ```bash
 //! $ clyde-3g-eps-service
-//! Listening on: 127.0.0.1:8089
+//! Listening on: 127.0.0.1:8100
 //! ```
 //!
-//! If no config file is specified, then the service will look at `/home/system/etc/config.toml`.
+//! If no config file is specified, then the service will look at `/etc/kubos-config.toml`.
 //! An alternative config file may be specified on the command line at run time:
 //!
 //! ```bash
@@ -413,17 +413,11 @@ mod tests;
 use crate::models::subsystem::Subsystem;
 use crate::schema::mutation::Root as MutationRoot;
 use crate::schema::query::Root as QueryRoot;
-use kubos_service::{Config, Service};
+use kubos_service::{Config, Logger, Service};
 use log::error;
-use syslog::Facility;
 
 fn main() {
-    syslog::init(
-        Facility::LOG_DAEMON,
-        log::LevelFilter::Debug,
-        Some("clyde-3g-eps-service"),
-    )
-    .unwrap();
+    Logger::init("clyde-3g-eps-service").unwrap();
 
     let config = Config::new("clyde-3g-eps-service")
         .map_err(|err| {

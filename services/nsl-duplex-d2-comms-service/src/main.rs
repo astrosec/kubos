@@ -36,7 +36,7 @@
 //!
 //! [nsl-duplex-comms-service.addr]
 //! ip = "127.0.0.1"
-//! port = 8089
+//! port = 8140
 //! ```
 //!
 //! The configuration of this service is split into three parts:
@@ -72,7 +72,7 @@
 //! NSL Duplex Communications Service starting on /dev/ttyUSB0
 //! ```
 //!
-//! If no config file is specified, then the service will look at `/home/system/etc/config.toml`.
+//! If no config file is specified, then the service will look at `/etc/kubos-config.toml`.
 //! An alternative config file may be specified on the command line at run time:
 //!
 //! ```bash
@@ -230,20 +230,14 @@ use crate::model::Subsystem;
 use crate::schema::{MutationRoot, QueryRoot};
 use comms_service::*;
 use failure::Error;
-use kubos_service::{Config, Service};
+use kubos_service::{Config, Logger, Service};
 use std::sync::{Arc, Mutex};
-use syslog::Facility;
 
 // Generic return type
 type NslDuplexCommsResult<T> = Result<T, Error>;
 
 fn main() -> NslDuplexCommsResult<()> {
-    syslog::init(
-        Facility::LOG_DAEMON,
-        log::LevelFilter::Debug,
-        Some("nsl-duplex-comms-service"),
-    )
-    .unwrap();
+    Logger::init("nsl-duplex-comms-service").unwrap();
 
     let service_config = Config::new("nsl-duplex-comms-service").map_err(|err| {
         error!("Failed to load service config: {:?}", err);
@@ -272,7 +266,10 @@ fn main() -> NslDuplexCommsResult<()> {
     };
 
     // Read configuration from config file.
-    let comms_config = CommsConfig::new(service_config.clone())?;
+    let comms_config = CommsConfig::new(service_config.clone()).map_err(|err| {
+        error!("Failed to load comms config: {:?}", err);
+        err
+    })?;
 
     // Open radio serial connection
     let duplex_comms = Arc::new(Mutex::new(DuplexComms::new(&bus, ping_freq)));

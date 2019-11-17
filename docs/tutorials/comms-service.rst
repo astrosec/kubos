@@ -75,7 +75,7 @@ Under this new service name, we'll be adding two sections:
 - A ``radio-service.addr`` section to define the IP and port for the GraphQL endpoint of our service
 - A ``radio-service.comms`` section to define our communications settings
 
-For the address section, we'll use the internal IP address, ``0.0.0.0``, and port 8020.
+For the address section, we'll use the internal IP address, ``0.0.0.0``, and port 8150.
 
 In the comms section, we'll define our satellite's IP address as ``0.0.0.0``, since internally our
 tutorial satellite's services all use different ports on the same IP address.
@@ -90,7 +90,7 @@ The final ``config.toml`` section should look like this::
 
     [radio-service.addr]
     ip = "0.0.0.0"
-    port = 8020
+    port = 8150
 
     [radio-service.comms]
     timeout = 1000
@@ -114,8 +114,6 @@ Edit the ``Cargo.toml`` file to have the following dependencies::
     kubos-service = { git = "https://github.com/kubos/kubos" }
     kubos-system = { git = "https://github.com/kubos/kubos" }
     log = "^0.4.0"
-    log4rs = "0.8"
-    log4rs-syslog = "3.0"
     serial = "0.4"
 
 All the dependencies, with the exception of ``serial``, should be common to all services
@@ -142,48 +140,13 @@ Logging
 We'll start by initializing our logging:
 
 .. code-block:: rust
-
+    
+    use kubos_service::Logger;
     use log::*;
-    use log4rs::append::console::ConsoleAppender;
-    use log4rs::encode::pattern::PatternEncoder;
-    use log4rs_syslog::SyslogAppender;
 
-    // Initialize logging for the service
-    // All messages will be routed to syslog and echoed to the console
-    fn log_init() -> ServiceResult<()> {
-        // Use custom PatternEncoder to avoid duplicate timestamps in logs.
-        let syslog_encoder = Box::new(PatternEncoder::new("{m}"));
-        // Set up logging which will be routed to syslog for processing
-        let syslog = Box::new(
-            SyslogAppender::builder()
-                .encoder(syslog_encoder)
-                .openlog(
-                    "radio-service",
-                    log4rs_syslog::LogOption::LOG_PID | log4rs_syslog::LogOption::LOG_CONS,
-                    log4rs_syslog::Facility::Daemon,
-                )
-                .build(),
-        );
-
-        // Set up logging which will be routed to stdout
-        let stdout = Box::new(ConsoleAppender::builder().build());
-
-        // Combine the loggers into one master config
-        let config = log4rs::config::Config::builder()
-            .appender(log4rs::config::Appender::builder().build("syslog", syslog))
-            .appender(log4rs::config::Appender::builder().build("stdout", stdout))
-            .build(
-                log4rs::config::Root::builder()
-                    .appender("syslog")
-                    .appender("stdout")
-                    // Set the minimum logging level to record
-                    .build(log::LevelFilter::Debug),
-            )?;
-
-        // Start the logger
-        log4rs::init_config(config)?;
-
-        Ok(())
+    fn main() {
+        // Initialize logging for the service
+        Logger::init("radio-service").unwrap();
     }
 
 Serial Initialization
@@ -403,8 +366,8 @@ After setting up logging, we'll want to fetch our service's configuration settin
 .. code-block:: rust
 
     fn main() -> ServiceResult<()> {
-        // Initialize logging for the program
-        log_init()?;
+        // Initialize logging for the service
+        Logger::init("radio-service").unwrap();
 
         // Get the main service configuration from the system's config.toml file
         let service_config = kubos_system::Config::new("radio-service")?;
@@ -440,8 +403,8 @@ The initialization should look like this:
 .. code-block:: rust
 
     fn main() -> ServiceResult<()> {
-        // Initialize logging for the program
-        log_init()?;
+        // Initialize logging for the service
+        Logger::init("radio-service").unwrap();
 
         // Get the main service configuration from the system's config.toml file
         let service_config = kubos_system::Config::new("radio-service")?;
@@ -479,8 +442,8 @@ For the moment, we'll put a loop at the end of our program to keep from exiting.
 .. code-block:: rust
 
     fn main() -> ServiceResult<()> {
-        // Initialize logging for the program
-        log_init()?;
+        // Initialize logging for the service
+        Logger::init("radio-service").unwrap();
 
         // Get the main service configuration from the system's config.toml file
         let service_config = kubos_system::Config::new("radio-service")?;
@@ -527,10 +490,8 @@ All together, our code so far should look like this:
     
     use comms_service::*;
     use failure::*;
+    use kubos_service::Logger;
     use log::*;
-    use log4rs::append::console::ConsoleAppender;
-    use log4rs::encode::pattern::PatternEncoder;
-    use log4rs_syslog::SyslogAppender;
     use serial;
     use serial::prelude::*;
     use std::cell::RefCell;
@@ -543,44 +504,6 @@ All together, our code so far should look like this:
     // Maximum number of bytes to attempt to read at one time
     const MAX_READ: usize = 48;
     const TIMEOUT: Duration = Duration::from_millis(100);
-    
-    // Initialize logging for the service
-    // All messages will be routed to syslog and echoed to the console
-    fn log_init() -> ServiceResult<()> {
-        // Use custom PatternEncoder to avoid duplicate timestamps in logs.
-        let syslog_encoder = Box::new(PatternEncoder::new("{m}"));
-        // Set up logging which will be routed to syslog for processing
-        let syslog = Box::new(
-            SyslogAppender::builder()
-                .encoder(syslog_encoder)
-                .openlog(
-                    "radio-service",
-                    log4rs_syslog::LogOption::LOG_PID | log4rs_syslog::LogOption::LOG_CONS,
-                    log4rs_syslog::Facility::Daemon,
-                )
-                .build(),
-        );
-    
-        // Set up logging which will be routed to stdout
-        let stdout = Box::new(ConsoleAppender::builder().build());
-    
-        // Combine the loggers into one master config
-        let config = log4rs::config::Config::builder()
-            .appender(log4rs::config::Appender::builder().build("syslog", syslog))
-            .appender(log4rs::config::Appender::builder().build("stdout", stdout))
-            .build(
-                log4rs::config::Root::builder()
-                    .appender("syslog")
-                    .appender("stdout")
-                    // Set the minimum logging level to record
-                    .build(log::LevelFilter::Debug),
-            )?;
-    
-        // Start the logger
-        log4rs::init_config(config)?;
-    
-        Ok(())
-    }
     
     // Initialize the serial bus connection for reading and writing from/to the "radio"
     pub fn serial_init(bus: &str) -> ServiceResult<Arc<Mutex<RefCell<serial::SystemPort>>>> {
@@ -681,9 +604,9 @@ All together, our code so far should look like this:
     }
     
     fn main() -> ServiceResult<()> {
-        // Initialize logging for the program
-        log_init()?;
-    
+        // Initialize logging for the service
+        Logger::init("radio-service").unwrap();
+
         // Get the main service configuration from the system's config.toml file
         let service_config = kubos_system::Config::new("test-comms")?;
     
@@ -790,15 +713,15 @@ Execution
 ~~~~~~~~~
 
 To start, we'll send a simple telemetry request to the telemetry service running on the OBC.
-By default, the telemetry service uses port 8006 for GraphQL requests.
+By default, the telemetry service uses port 8020 for GraphQL requests.
 
 From the SDK, run the following command::
 
-    $ uart-comms-client "{telemetry(latest: 10){subsystem, parameter, value}" -b /dev/FTDI -p 8006
+    $ uart-comms-client "{telemetry(latest: 10){subsystem, parameter, value}" -b /dev/FTDI -p 8020
     
 Or, from your local dev environment::
 
-    $ cargo run -- "{telemetry(latest: 10){subsystem, parameter, value}" -b /dev/FTDI -p 8006
+    $ cargo run -- "{telemetry(latest: 10){subsystem, parameter, value}" -b /dev/FTDI -p 8020
 
 You should see the following output::
 
@@ -821,7 +744,7 @@ check the following:
     - OBC's UART port is correctly wired to the user's PC
     - Destination IP given to the client matches the ``ip`` parameter in the service
     - Port given to the client matches the port of the telemetry service (this is defined in
-      the systems ``config.toml`` file. The default location is ``/home/system/etc/config.toml``)
+      the systems ``config.toml`` file. The default location is ``/etc/kubos-config.toml``)
 
 GraphQL
 -------
@@ -984,11 +907,11 @@ We can now define and start our GraphQL front-end in the main code:
     use crate::model::*;
     use crate::schema::*;
     
-    use kubos_service::Service;
+    use kubos_service::{Logger, Service};
 
     fn main() -> ServiceResult<()> {
-        // Initialize logging for the program
-        log_init()?;
+        // Initialize logging for the service
+        Logger::init("radio-service").unwrap();
 
         // Get the main service configuration from the system's config.toml file
         let service_config = kubos_system::Config::new("radio-service")?;
@@ -1030,7 +953,7 @@ Testing
 
 Now that the code is complete, we can use our communications service to send a query to itself::
 
-    $ uart-comms-client -b /dev/FTDI -p 8020 "{packetsUp,packetsDown,failedPacketsUp,failedPacketsDown,errors}"
+    $ uart-comms-client -b /dev/FTDI -p 8150 "{packetsUp,packetsDown,failedPacketsUp,failedPacketsDown,errors}"
     Response: {"data":{"failedPacketsDown":0,"failedPacketsUp":0,"packetsDown":4,"packetsUp":5},"errors":[]}
 
 .. |comms-service-start| raw:: html

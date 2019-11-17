@@ -30,13 +30,14 @@ Syntax
 
 The shell client has the following command syntax::
 
-  kubos-shell-client [options] (start | list | join | kill)
+  kubos-shell-client [options] (start | run | list | join | kill)
 
 Required arguments:
 
     - Operation to perform
 
         - ``start`` - Start a new shell session
+        - ``run`` - Run single remote command
         - ``list`` - List current shell sessions
         - ``join`` - Join an existing shell session
         - ``kill`` - Kill an existing shell session
@@ -45,7 +46,7 @@ Required arguments:
 Optional arguments:
 
     - ``-i {remote IP}`` - Default: `0.0.0.0`. IP address of the shell service to connect to.
-    - ``-p {remote port}`` - Default: `8010`. UDP port of the shell service to connect to.
+    - ``-p {remote port}`` - Default: `8050`. UDP port of the shell service to connect to.
 
 Starting a New Shell Session
 ----------------------------
@@ -54,17 +55,17 @@ We'll start by creating a new shell session between our dev environment and the 
 
 Our command should look like this::
 
-   $ kubos-shell-client -i 10.0.2.20 -p 8010 start
-   
+   $ kubos-shell-client -i 10.0.2.20 -p 8050 start
+
 Or, from your local dev environment::
 
-    $ cargo run -- -i 10.0.2.20 -p 8010 start
+    $ cargo run --bin kubos-shell-client -- -i 10.0.2.20 -p 8050 start
 
 The output from the client should look like this:
 
 .. code-block:: none
 
-   Starting shell client -> 10.0.2.20:8010
+   Starting shell client -> 10.0.2.20:8050
    Starting shell session -> 672612
    Press enter to send input to the shell session
    Press Control-D to detach from the session
@@ -78,7 +79,7 @@ A simple shell session would look like this:
 
 .. code-block:: none
 
-   Starting shell client -> 10.0.2.20:8010
+   Starting shell client -> 10.0.2.20:8050
    Starting shell session -> 672612
    Press enter to send input to the shell session
    Press Control-D to detach from the session
@@ -98,14 +99,14 @@ Next we will look at listing the existing shell sessions on the OBC.
 
 Our command should look like this::
 
-   $ kubos-shell-client -i 10.0.2.20 -p 8010 list
+   $ kubos-shell-client -i 10.0.2.20 -p 8050 list
 
 The output from the client will look like this because we just
 started a session in the previous step:
 
 .. code-block:: none
 
-   Starting shell client -> 10.0.2.20:8010
+   Starting shell client -> 10.0.2.20:8050
    Fetching existing shell sessions:
        672612	{ path = '/bin/bash', pid = 24939 }
 
@@ -125,7 +126,7 @@ If no sessions exist, then the output from the client will look like this:
 
 .. code-block:: none
 
-   Starting shell client -> 10.0.2.20:8010
+   Starting shell client -> 10.0.2.20:8050
    Fetching existing shell sessions:
        No active sessions found
 
@@ -143,13 +144,13 @@ The channel ID should belong to a shell session which was previously started.
 
 To join the session started earlier, our command will look like this::
 
-   $ kubos-shell-client -i 10.0.2.20 -p 8010 join -c 672612
+   $ kubos-shell-client -i 10.0.2.20 -p 8050 join -c 672612
 
 The output from the client should look like this:
 
 .. code-block:: none
 
-   Starting shell client -> 10.0.2.20:8010
+   Starting shell client -> 10.0.2.20:8050
    Joining existing shell session 672612
    Press enter to send input to the shell session
    Press Control-D to detach from the session
@@ -172,11 +173,43 @@ specified, then ``SIGKILL`` will be sent.
 
 Our command should look like this::
 
-   $ kubos-shell-client -i 10.0.2.20 -p 8010 kill -c 672612
+   $ kubos-shell-client -i 10.0.2.20 -p 8050 kill -c 672612
 
 The output from the client should look like this:
 
 .. code-block:: none
 
-   Starting shell client -> 10.0.2.20:8010
+   Starting shell client -> 10.0.2.20:8050
    Killing existing shell session -c 672712
+
+Running a Single Remote Command
+-------------------------------
+
+Sometimes only a single command needs to be run. In these cases it is
+not necessary to start a whole shell session. The run command will
+handle starting the shell session, running the remote command,
+retrieving the output, and terminating the shell session.
+
+The run command has the following syntax::
+
+   kubos-shell-client run -c "<command>"
+
+The run command requires a command string to know what to run.
+This command string must include the base command as well as
+any required arguments. The command string **must** be enclosed in `"`s.
+
+A good use case for this command is determining the contents of a directory.
+We will look at the contents of the `/home` directory. Our command should
+look like this::
+
+   $ kubos-shell-client -i 10.0.2.20 -p 8050 run -c "ls /home"
+
+The output from the client should look like this:
+
+.. code-block:: none
+
+   Starting shell client: -> 10.0.2.20:8050
+   Running remote command 'ls -l /home'
+
+   kubos
+   system

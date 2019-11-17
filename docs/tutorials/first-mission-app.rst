@@ -35,12 +35,12 @@ Setup
 
     $ git clone https://github.com/kubos/kubos
     
-- Navigate to the kubos source directory and run the following commands to start the monitor service
+- Navigate to the `kubos` source directory and run the following commands to start the monitor service
   and telemetry database service in the background (the services may need to be built first, which
   will take several minutes to complete)::
   
-    $ cargo run --bin monitor-service -- -c tools/default_config.toml &
-    $ cargo run --bin telemetry-service -- -c tools/default_config.toml &
+    $ cargo run --bin monitor-service -- -c tools/local_config.toml &
+    $ cargo run --bin telemetry-service -- -c tools/local_config.toml &
     
 - Navigate back out to the development directory of your choosing.
   This tutorial will use ``/home/user/my-app`` as the example development directory and will assume
@@ -183,9 +183,9 @@ In order to communicate with a service, we need to know where to send our messag
 All services rely on a configuration file, ``config.toml``, in order to determine which IP and port
 they should bind a listener thread to.
 
-By default, this file is located in ``/home/system/etc/config.toml``.
+By default, this file is located in ``/etc/kubos-config.toml``.
 Since we're running these tutorials locally, that file location likely doesn't exist, so instead we
-are using the ``tools/default_config.toml`` file in our cloned copy of the kubos repo.
+are using the ``tools/local_config.toml`` file in our cloned copy of the kubos repo.
 
 We'll need to pass our application this path when we go to run it locally.
 
@@ -239,16 +239,18 @@ To start, we'll import the API::
 
 Then, we'll add a new command line option ``-c`` to allow us to pass a non-default config file for
 testing purposes::
-
+    
+    import argparse
+    parser = argparse.ArgumentParser()
+    
     parser.add_argument('--config', '-c')
     
     args = parser.parse_args()
     
     if args.config is not None:
-        global SERVICES
         SERVICES = app_api.Services(args.config)
     else:
-        SERVICES = app_api.services()
+        SERVICES = app_api.Services()
     
 Then, we'll create the query we want to send::
 
@@ -266,7 +268,7 @@ And finally, we'll parse the result to get our response string::
     else:
         print("Unexpected monitor service response: %s" % data)
 
-After adding error handling, our program should look like this:
+After adding proper structure, our program should look like this:
 
 .. code-block:: python
 
@@ -274,7 +276,6 @@ After adding error handling, our program should look like this:
 
     import argparse
     import app_api
-    import sys
     
     def main():
     
@@ -285,18 +286,13 @@ After adding error handling, our program should look like this:
         args = parser.parse_args()
         
         if args.config is not None:
-            global SERVICES
             SERVICES = app_api.Services(args.config)
         else:
             SERVICES = app_api.services()
         
         request = '{ ping }'
         
-        try:
-            response = SERVICES.query(service="monitor-service", query=request)
-        except Exception as e: 
-            print("Something went wrong: " + str(e))
-            sys.exit(1)
+        response = SERVICES.query(service="monitor-service", query=request)
         
         data = response["ping"]
         
@@ -310,7 +306,7 @@ After adding error handling, our program should look like this:
     
 If we run our program, the output should look like this::
 
-    $ ./my-mission-app.py -c ../kubos/tools/default_config.toml
+    $ ./my-mission-app.py -c ../kubos/tools/local_config.toml
     Successfully pinged monitor service
 
 Writing Data to the Telemetry Database
@@ -372,7 +368,7 @@ Finally, we'll check the response to make sure the operation finished successful
     else:
         print("Telemetry insert completed successfully")
 
-With some additional error handling, our final application looks like this:
+With some error handling, our final application looks like this:
 
 .. code-block:: python
 
@@ -391,7 +387,6 @@ With some additional error handling, our final application looks like this:
         args = parser.parse_args()
         
         if args.config is not None:
-            global SERVICES
             SERVICES = app_api.Services(args.config)
         else:
             SERVICES = app_api.Services()
@@ -444,7 +439,7 @@ With some additional error handling, our final application looks like this:
 
 If we run our program, the output should look like this::
 
-    $ ./my-mission-app.py -c ../kubos/tools/default_config.toml
+    $ ./my-mission-app.py -c ../kubos/tools/local_config.toml
     Successfully pinged monitor service
     Telemetry insert completed successfully
     
